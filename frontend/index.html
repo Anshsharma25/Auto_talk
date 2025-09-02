@@ -1,0 +1,52 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Live Talking Avatar — Demo</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>Talk to a Photo</h1>
+      <p class="subtitle">Upload an image, ask a question — the person responds with lip-synced animation.</p>
+    </header>
+
+    <main>
+      <div class="card">
+        <label class="file-label">
+          <input id="imgInput" type="file" accept="image/*" />
+          <div class="drop-area">Click to select / drop an image</div>
+        </label>
+        <div class="preview" id="imgPreview"><img id="facePreview" src="" alt="" /></div>
+      </div>
+
+      <div class="card">
+        <div class="controls">
+          <button id="micCheckBtn" class="btn secondary">Check Mic</button>
+          <select id="micSelect" style="margin-left:8px"></select>
+          <button id="recBtn" class="btn">Start Recording</button>
+          <button id="stopBtn" class="btn secondary" disabled>Stop & Send</button>
+          <div id="status" class="status">Idle</div>
+        </div>
+        <div class="player">
+          <video id="replyVideo" controls></video>
+          <audio id="replyAudio" controls></audio>
+        </div>
+      </div>
+
+      <div class="card messages">
+        <h3>Logs</h3>
+        <div id="log"></div>
+      </div>
+    </main>
+
+    <footer>
+      <small>Prototype · Keep your API keys secret · Requires ffmpeg & Wav2Lip on server</small>
+    </footer>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
