@@ -1,0 +1,6 @@
+.env
+/uploads/*
+/Wav2Lip/checkpoints/*
+v_env/
+SadTalker/
+SadTalke/

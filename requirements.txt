@@ -1,0 +1,13 @@
+Flask
+requests
+gTTS
+pydub
+python-dotenv
+flask
+requests
+python-dotenv
+pyttsx3
+pydub
+safetensors
+torch
+torchvision
