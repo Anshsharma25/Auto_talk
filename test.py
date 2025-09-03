@@ -1,3 +1,5 @@
-import os
-print(os.getenv(r"D:\project_v\Wav2Lip\checkpoints"))
-print(os.path.exists(os.getenv(r"D:\project_v\Wav2Lip\checkpoints")))
+from vosk import Model
+
+model_path = r"C:\Users\HP\Downloads\vosk-model-small-en-us-0.15\vosk-model-small-en-us-0.15"
+m = Model(model_path)
+print("Model loaded successfully!")

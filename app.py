@@ -1,15 +1,21 @@
-# app.py
+# Updated app.py — fixes for SadTalker invocation and safetensors handling
+# - Uses sys.executable for subprocess so the same Python interpreter is used
+# - Makes PYTHONPATH include SADTALKER_DIR so `-m sadtalker` can find the package
+# - More robust search for an inference script inside SADTALKER_DIR (walks tree)
+# - Handles both .safetensor and .safetensors extensions when trying to convert to .pth
+# - If safetensors or torch are not installed, conversion is skipped with a warning (log preserved)
+# - Writes an informative log file regardless of success/failure (already in original code)
+
 import os
 import uuid
 import subprocess
 import tempfile
 import time
+import sys
 from flask import Flask, request, render_template, jsonify, send_from_directory
 import requests
 import pyttsx3
 from dotenv import load_dotenv
-
-# pydub for audio handling/resampling
 from pydub import AudioSegment
 from pydub.utils import which as pydub_which
 
@@ -18,14 +24,11 @@ load_dotenv()
 # -------------------------
 # Ensure pydub can find ffmpeg
 # -------------------------
-# Explicitly set your ffmpeg path
 _ffmpeg_path = r"C:\Users\HP\Downloads\ffmpeg-8.0-essentials_build\ffmpeg-8.0-essentials_build\bin\ffmpeg.exe"
-
 if os.path.exists(_ffmpeg_path):
     AudioSegment.converter = _ffmpeg_path
     os.environ["PATH"] += os.pathsep + os.path.dirname(_ffmpeg_path)
 else:
-    # fallback to PATH lookup
     _ffmpeg_path = pydub_which("ffmpeg") or pydub_which("ffmpeg.exe")
     if _ffmpeg_path:
         AudioSegment.converter = _ffmpeg_path
@@ -54,10 +57,10 @@ FLASK_DEBUG = os.getenv("FLASK_DEBUG", "False").lower() in ("1", "true", "yes")
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 app = Flask(__name__, template_folder="templates")
 
-
 # -------------------------
 # Helpers
 # -------------------------
+
 def groq_chat_reply(user_text, conversation_history=None):
     if not GROQ_API_KEY:
         return f"(demo) I heard: {user_text}"
@@ -81,7 +84,6 @@ def groq_chat_reply(user_text, conversation_history=None):
 
 
 def text_to_speech_wav(text, out_path_wav):
-    """Produce a WAV file using pyttsx3 (offline)."""
     if not out_path_wav.lower().endswith(".wav"):
         raise ValueError("out_path_wav must end with .wav")
     engine = pyttsx3.init()
@@ -94,7 +96,6 @@ def text_to_speech_wav(text, out_path_wav):
 
 
 def ensure_wav_16k_mono(src_wav, dst_wav=None):
-    """Resample and convert audio to 16kHz mono WAV. Overwrites src by default."""
     if dst_wav is None:
         dst_wav = src_wav
     if AudioSegment.converter is None:
@@ -106,29 +107,53 @@ def ensure_wav_16k_mono(src_wav, dst_wav=None):
 
 
 def maybe_convert_safetensor(checkpoint_path):
-    if not checkpoint_path.lower().endswith(".safetensor"):
-        return checkpoint_path, None
-    from safetensors.torch import load_file
-    import torch
-    sd = load_file(checkpoint_path)
-    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".pth")
-    tmp_name = tmp.name
-    tmp.close()
-    torch.save(sd, tmp_name)
-    return tmp_name, tmp_name
+    """
+    If the checkpoint is a safetensors file, try to convert to a temporary .pth file
+    Returns (actual_checkpoint_path, tmp_created_path_or_None).
+    If safetensors/torch are not available, skip conversion with a warning.
+    Handles both .safetensor and .safetensors endings.
+    """
+    lower = checkpoint_path.lower()
+    if lower.endswith(".safetensor") or lower.endswith(".safetensors"):
+        try:
+            from safetensors.torch import load_file
+            import torch
+        except Exception as e:
+            # Don't crash here — log warning and fall back to passing original file
+            print(f"WARNING: unable to import safetensors/torch to convert checkpoint: {e}")
+            return checkpoint_path, None
+        sd = load_file(checkpoint_path)
+        tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".pth")
+        tmp_name = tmp.name
+        tmp.close()
+        torch.save(sd, tmp_name)
+        return tmp_name, tmp_name
+    return checkpoint_path, None
 
 
 def find_infer_script():
-    candidates = ["inference.py", "demo.py", "infer.py"]
+    """Search the SADTALKER_DIR for a likely inference script. If found, return (path, False).
+    If not found, return (None, True) meaning caller should attempt module execution (-m).
+    """
+    candidates = ("inference.py", "demo.py", "infer.py")
+    # quick check in root
     for c in candidates:
         p = os.path.join(SADTALKER_DIR, c)
         if os.path.exists(p):
             return p, False
+    # walk tree for any file with names containing inference/demo/infer
+    for root, dirs, files in os.walk(SADTALKER_DIR):
+        for f in files:
+            lf = f.lower()
+            if lf in candidates or any(tok in lf for tok in ("inference", "demo", "infer")):
+                if f.endswith(".py"):
+                    return os.path.join(root, f), False
+    # not found — caller will try module form
     return None, True
 
 
 def generate_sadtalker_video(
-    image_path, audio_path, out_video_path, checkpoint_path=SADTALKER_CHECKPOINT, device="cpu", timeout=900
+    image_path, audio_path, out_video_path, checkpoint_path=SADTALKER_CHECKPOINT, device="cpu", timeout=1800
 ):
     if not os.path.exists(SADTALKER_DIR):
         raise FileNotFoundError(f"SadTalker directory not found: {SADTALKER_DIR}")
@@ -143,40 +168,22 @@ def generate_sadtalker_video(
     abs_out = os.path.abspath(out_video_path)
     abs_checkpoint = os.path.abspath(actual_checkpoint)
 
-    if not use_module:
-        cmd = [
-            "python",
-            script_path,
-            "--source_image",
-            abs_image,
-            "--driven_audio",
-            abs_audio,
-            "--output",
-            abs_out,
-            "--checkpoint",
-            abs_checkpoint,
-            "--device",
-            device,
-        ]
+    # Use the same Python interpreter that's running this app to avoid "wrong python" issues
+    python_exec = sys.executable or "python"
+
+    if not use_module and script_path:
+        cmd = [python_exec, script_path, "--source_image", abs_image, "--driven_audio", abs_audio, "--output", abs_out, "--checkpoint", abs_checkpoint, "--device", device]
     else:
-        cmd = [
-            "python",
-            "-m",
-            "sadtalker",
-            "--source_image",
-            abs_image,
-            "--driven_audio",
-            abs_audio,
-            "--output",
-            abs_out,
-            "--checkpoint",
-            abs_checkpoint,
-            "--device",
-            device,
-        ]
+        # Try module invocation. Ensure SADTALKER_DIR is on PYTHONPATH so -m can find it
+        cmd = [python_exec, "-m", "sadtalker", "--source_image", abs_image, "--driven_audio", abs_audio, "--output", abs_out, "--checkpoint", abs_checkpoint, "--device", device]
+
+    env = os.environ.copy()
+    # Prepend SADTALKER_DIR to PYTHONPATH so imports inside sadtalker package work
+    old_py = env.get("PYTHONPATH", "")
+    env["PYTHONPATH"] = os.path.abspath(SADTALKER_DIR) + (os.pathsep + old_py if old_py else "")
 
     proc = subprocess.run(
-        cmd, cwd=SADTALKER_DIR, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=os.environ.copy(), timeout=timeout
+        cmd, cwd=SADTALKER_DIR if os.path.isdir(SADTALKER_DIR) else None, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env, timeout=timeout
     )
     stdout = proc.stdout.decode("utf-8", errors="replace")
     stderr = proc.stderr.decode("utf-8", errors="replace")
@@ -203,9 +210,8 @@ def generate_sadtalker_video(
 
     return abs_out, log_name
 
-
 # -------------------------
-# Flask routes
+# Flask routes (unchanged)
 # -------------------------
 @app.route("/")
 def index():
@@ -255,7 +261,7 @@ def chat_and_animate():
             src_img_path, audio_wav, out_video, checkpoint_path=SADTALKER_CHECKPOINT, device=SADTALKER_DEVICE
         )
     except Exception as e:
-        return jsonify({"error": "SadTalker failed", "detail": str(e)}), 500
+        return jsonify({"error": "SadTalker failed", "detail": str(e), "log_file": f"/uploads/{log_name}" if 'log_name' in locals() else None}), 500
 
     video_url = f"/uploads/{os.path.basename(generated_path)}"
     return jsonify({"reply_text": reply_text, "video_url": video_url, "log_file": f"/uploads/{log_name}"})
